@@ -6,12 +6,27 @@
 
 namespace chess {
 
+struct MoveList {
+    Move moves[256];  // no legal position has more than 218 moves
+    int count = 0;
+
+    void push(const Move& m) { moves[count++] = m; }
+    int size() const { return count; }
+    bool empty() const { return count == 0; }
+
+    // These let range-based for loops work: for (const Move& m : list)
+    Move* begin() { return moves; }
+    Move* end() { return moves + count; }
+    const Move* begin() const { return moves; }
+    const Move* end() const { return moves + count; }
+};
+
 // ---------------------------------------------------------------------------
 // YOUR NEXT MILESTONE: move generation.
 //
 // Suggested order:
-//   1. Pseudo-legal moves for each piece type (sliders, knights, king, pawns).
-//   2. Pawn specials: double push, en passant, promotion (4 moves per push).
+//   1. Pseudo-legal moves for each piece type (sliders, knights, king, pawns). DONE
+//   2. Pawn specials: double push, en passant, promotion (4 moves per push). 
 //   3. Castling (rights, empty squares, king not passing through check).
 //   4. Legality: drop moves that leave your own king in check.
 //   5. Finish Board::makeMove (castling, en passant, promotion) and add
