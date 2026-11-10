@@ -9,10 +9,6 @@ using namespace chess;
 
 namespace {
 
-// Flip to true once generateLegalMoves() works. Until then, any piece of the
-// side to move can go to any square, so you can test the GUI end to end.
-constexpr bool kEnforceLegalMoves = false;
-
 constexpr Color kLightSquare{.r = 0.93f, .g = 0.85f, .b = 0.71f, .a = 1.0f};
 constexpr Color kDarkSquare{.r = 0.71f, .g = 0.53f, .b = 0.39f, .a = 1.0f};
 constexpr Color kSelected{.r = 0.98f, .g = 0.85f, .b = 0.25f, .a = 0.55f};
@@ -96,29 +92,29 @@ void Game::onMouseClick(float x, float y) {
     Square s = squareAt(x, y);
     if (s == NoSquare) return select(NoSquare);
 
-    Piece p = board_.at(s);
-    bool ownPiece = p != NoPiece && colorOf(p) == board_.sideToMove();
+    bool ownPiece = isColor(board_.at(s), board_.sideToMove());
 
     if (selected_ == NoSquare || ownPiece) {
         // Pick up (or switch to) one of our pieces; clicking it again drops it.
         return select(ownPiece && s != selected_ ? s : NoSquare);
     }
 
-    // A piece is selected and we clicked elsewhere: try to move there.
+    // A piece is selected and another square was clicked: play the move if it's legal.
     Move move{.from = selected_, .to = s};
     auto legal = std::ranges::find_if(selectedMoves_,
                                       [&](const Move& m) { return m.to == s; });
     if (legal != selectedMoves_.end()) {
-        move = *legal;  // carries promotion info, etc.
-        // TODO: if several moves share this target (promotions), ask which piece.
-    } else if (kEnforceLegalMoves) {
+        move = *legal;  // the generated move, so the promotion piece is filled in
+        // TODO: promotions produce four moves to the same square and this takes the
+        // first (queen); let the player choose instead.
+    } else {
         return select(NoSquare);
     }
 
     board_.makeMove(move);
     lastMove_ = move;
     select(NoSquare);
-    std::printf("%s\n", board_.toFEN().c_str());  // handy while debugging
+    std::printf("%s\n", board_.toFEN().c_str());  // log each position as FEN
 }
 
 void Game::onKey(const int key) {

@@ -1,8 +1,8 @@
 #pragma once
 #include <cstdint>
-#include <vector>
 
 #include "engine/board.h"
+#include "engine/types.h"
 
 namespace chess {
 
@@ -14,33 +14,24 @@ struct MoveList {
     int size() const { return count; }
     bool empty() const { return count == 0; }
 
-    // These let range-based for loops work: for (const Move& m : list)
+    // Iterators for range-based for.
     Move* begin() { return moves; }
     Move* end() { return moves + count; }
     const Move* begin() const { return moves; }
     const Move* end() const { return moves + count; }
 };
 
-// ---------------------------------------------------------------------------
-// YOUR NEXT MILESTONE: move generation.
-//
-// Suggested order:
-//   1. Pseudo-legal moves for each piece type (sliders, knights, king, pawns). DONE
-//   2. Pawn specials: double push, en passant, promotion (4 moves per push). 
-//   3. Castling (rights, empty squares, king not passing through check).
-//   4. Legality: drop moves that leave your own king in check.
-//   5. Finish Board::makeMove (castling, en passant, promotion) and add
-//      unmakeMove (or copy-make) so search can undo moves.
-//   6. Run the perft tests in tests/engine_tests.cpp until every one passes.
-//
-// The GUI already calls generateLegalMoves() to show legal-move dots and,
-// once you flip kEnforceLegalMoves in src/gui/game.cpp, to reject illegal moves.
-// ---------------------------------------------------------------------------
+// Moves for the side to move that follow each piece's movement rules, including
+// castling, en passant and all four promotions. Some may leave the mover's own
+// king in check.
+MoveList generatePseudoLegalMoves(const Board& board);
 
-std::vector<Move> generateLegalMoves(const Board& board);
+// Pseudo-legal moves that don't leave the mover's king in check. Each move is
+// played on a copy of the board and kept if the king isn't attacked afterwards.
+MoveList generateLegalMoves(const Board& board);
 
-// Counts leaf nodes of the legal move tree to the given depth. The single most
-// useful correctness test for a move generator.
+// Counts leaf nodes of the legal move tree to the given depth. The tests compare
+// these counts against published reference values.
 uint64_t perft(const Board& board, int depth);
 
 }  // namespace chess
