@@ -15,8 +15,8 @@ option(CHESS_BUILD_TESTS "Build engine tests" ON)
 include(FetchContent)
 
 # ---------------------------------------------------------------------------
-# Engine: pure C++, no graphics. Shared by the game, the tests and (later) a
-# UCI command-line engine.
+# Engine: chess rules (board, FEN, move generation) with no graphics
+# dependency. Linked into both the game and the tests.
 # ---------------------------------------------------------------------------
 add_library(engine STATIC
   src/engine/board.cpp

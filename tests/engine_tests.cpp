@@ -1,8 +1,8 @@
-// Engine tests. No framework needed: each check prints PASS/FAIL and the
-// program exits non-zero if anything failed, so `ctest` picks it up.
+// Engine tests. Each check prints PASS or FAIL, and the program exits non-zero
+// if any failed, so `ctest` reports the result.
 //
-//   ./build/engine_tests          FEN tests + quick perft (depth <= 4)
-//   ./build/engine_tests --deep   also runs the slow, deeper perft counts
+//   ./build/engine_tests          FEN, en passant and check tests, perft to depth 4
+//   ./build/engine_tests --deep   perft to depth 6 (several seconds)
 
 #include <chrono>
 #include <cstdio>
@@ -39,8 +39,58 @@ static void testFEN() {
     check(!b.loadFEN("8/8/8/8/8/8/8/9 w - - 0 1"), "rejects rank with >8 files");
     check(b.toFEN() == kStartFEN, "failed load leaves board unchanged");
 
-    check(b.at(makeSquare(4, 0)) == WKing && b.at(makeSquare(3, 7)) == BQueen,
+    check(b.at(E1) == WKing && b.at(D8) == BQueen,
           "start position: e1 = white king, d8 = black queen");
+}
+
+static void testEnPassant() {
+    // A double push offers en passant, a single push does not.
+    Board b;
+    b.makeMove({E2, E4});
+    check(b.enPassantSquare() == E3, "double push sets en passant square");
+    b.makeMove({G8, F6});  // knight
+    check(b.enPassantSquare() == NoSquare, "next move clears en passant square");
+
+    // White captures: the pawn on d5 disappears, not just the one that moved.
+    b.loadFEN("4k3/3p4/8/4P3/8/8/8/4K3 b - - 0 1");
+    b.makeMove({D7, D5});
+    check(b.enPassantSquare() == D6, "black double push sets en passant square");
+    bool offered = false;
+    for (const Move& m : generateLegalMoves(b)) offered |= m.from == E5 && m.to == D6;
+    check(offered, "en passant capture is generated");
+    b.makeMove({E5, D6});
+    check(b.toFEN() == "4k3/8/3P4/8/8/8/8/4K3 b - - 0 2", "white en passant removes captured pawn");
+
+    // Black captures, mirrored.
+    b.loadFEN("4k3/8/8/8/3p4/8/4P3/4K3 w - - 0 1");
+    b.makeMove({E2, E4});
+    b.makeMove({D4, E3});
+    check(b.toFEN() == "4k3/8/8/8/8/4p3/8/4K3 w - - 0 2", "black en passant removes captured pawn");
+
+    // A normal capture elsewhere must not remove anything extra.
+    b.loadFEN("4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1");
+    b.makeMove({E4, D5});
+    check(b.toFEN() == "4k3/8/8/3P4/8/8/8/4K3 b - - 0 1", "normal pawn capture unaffected");
+}
+
+static void testCheck() {
+    // Own rook on e2 shields the king from the rook on e8: king has d1, f1, d2, f2
+    // and the pinned rook can still slide along the e-file (e3-e8).
+    Board b;
+    b.loadFEN("k3r3/8/8/8/8/8/4R3/4K3 w - - 0 1");
+    check(generateLegalMoves(b).size() == 10, "own piece blocks an attack");
+
+    // In check from e8: the bishop can block on e2 or e6, the king can step aside.
+    b.loadFEN("k3r3/8/8/8/2B5/8/8/4K3 w - - 0 1");
+    check(generateLegalMoves(b).size() == 6, "blocking a check is legal");
+
+    // In check from a1: Qxa1 captures, Qd1 blocks, Kd2/Ke2/Kf2 step away.
+    // (Kf1 stays on the rook's rank, Kd1 is attacked, other queen moves ignore the check.)
+    b.loadFEN("k7/8/8/8/3Q4/8/8/r3K3 w - - 0 1");
+    bool canCapture = false;
+    for (const Move& m : generateLegalMoves(b)) canCapture |= m.from == D4 && m.to == A1;
+    check(canCapture, "capturing the checking piece is legal");
+    check(generateLegalMoves(b).size() == 5, "only moves that answer the check are legal");
 }
 
 // Reference counts from the Chess Programming Wiki "Perft Results" page.
@@ -64,11 +114,6 @@ static const PerftCase kPerft[] = {
 };
 
 static void testPerft(int maxDepth) {
-    Board start;
-    if (generateLegalMoves(start).empty()) {
-        std::printf("SKIP  perft: generateLegalMoves() not implemented yet\n");
-        return;
-    }
     for (const auto& c : kPerft) {
         Board b;
         b.loadFEN(c.fen);
@@ -83,7 +128,7 @@ static void testPerft(int maxDepth) {
                                    std::to_string(d) + ": got " + std::to_string(got) +
                                    ", want " + std::to_string(want) + " (" +
                                    std::to_string(int(ms)) + " ms)");
-            if (got != want) break;  // deeper depths will fail too
+            if (got != want) break;  // a wrong count at one depth makes every deeper one wrong
         }
     }
 }
@@ -91,6 +136,8 @@ static void testPerft(int maxDepth) {
 int main(int argc, char** argv) {
     bool deep = argc > 1 && std::strcmp(argv[1], "--deep") == 0;
     testFEN();
+    testEnPassant();
+    testCheck();
     testPerft(deep ? 6 : 4);
     std::printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "OK", failures,
                 failures == 1 ? "" : "s");

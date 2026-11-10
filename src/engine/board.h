@@ -10,9 +10,8 @@ namespace chess {
 inline constexpr std::string_view kStartFEN =
     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
-// Mailbox board: one entry per square. Simple and easy to debug.
-// A good later milestone is adding bitboards (one uint64_t per piece) alongside
-// or instead of this array — that is where most engine speed comes from.
+// Mailbox board: one Piece per square, indexed by Square, plus the rest of the
+// game state a FEN records (side to move, castling rights, en passant, clocks).
 class Board {
 public:
     Board();
@@ -23,15 +22,18 @@ public:
     std::string toFEN() const;
 
     Piece at(Square s) const { return squares_[s]; }
+    Piece at(int file, int rank) const { return at(makeSquare(file, rank)); }
+    bool isEmptyAt(Square s) const { return at(s) == NoPiece; }
+    bool isEmptyAt(int file, int rank) const { return isEmptyAt(makeSquare(file, rank)); }
     Color sideToMove() const { return sideToMove_; }
     uint8_t castlingRights() const { return castling_; }
     Square enPassantSquare() const { return epSquare_; }
     int halfmoveClock() const { return halfmove_; }
     int fullmoveNumber() const { return fullmove_; }
 
-    // Applies a move WITHOUT checking legality, and does not yet handle
-    // castling, en passant or promotion. Extending this is part of the
-    // move-generation milestone (see movegen.h).
+    // Plays a pseudo-legal move: handles captures, en passant, castling (moves the
+    // rook) and promotion, then updates castling rights, the en passant square,
+    // both clocks and the side to move. Does not check legality.
     void makeMove(const Move& m);
 
 private:

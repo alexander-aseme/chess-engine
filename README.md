@@ -71,8 +71,8 @@ assets/        pieces.png
 
 - [x] Window, renderer, board and pieces, click-to-move, board flip
 - [x] Board representation and FEN parsing, with tests
-- [ ] Legal move generation (castling, en passant, promotion) — pass every perft test
-- [ ] Turn on legal-move enforcement in the GUI (`kEnforceLegalMoves` in `src/gui/game.cpp`)
+- [x] Legal move generation (castling, en passant, promotion), passing every perft test
+- [x] Legal-move enforcement in the GUI
 - [ ] Undo/redo, drag-and-drop, promotion picker, check/checkmate display
 - [ ] Text rendering (move list, coordinates, game result)
 - [ ] Evaluation: material + piece-square tables
