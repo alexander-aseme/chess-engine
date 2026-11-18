@@ -1,4 +1,5 @@
 #include "engine/movegen.h"
+#include <algorithm>
 #include <span>
 
 namespace chess {
@@ -58,14 +59,6 @@ namespace chess {
                 return false;
             };
             return lineAttacked(orthogonal, Rook) || lineAttacked(diagonal, Bishop);
-        }
-
-        // True if side's king is attacked by the other colour.
-        bool isInCheck(const Board& board, Color side) {
-            for (Square s = 0; s < 64; ++s)
-                if (board.at(s) == makePiece(side, King))
-                    return isSquareAttacked(board, s, opposite(side));
-            return false;
         }
 
         // Steps from `from` in each direction, adding a move for every empty square
@@ -168,6 +161,13 @@ namespace chess {
 
     }  // namespace
 
+    bool isInCheck(const Board& board, Color side) {
+        for (Square s = 0; s < 64; ++s)
+            if (board.at(s) == makePiece(side, King))
+                return isSquareAttacked(board, s, opposite(side));
+        return false;
+    }
+
     MoveList generatePseudoLegalMoves(const Board& board) {
         MoveList moves;
         for (Square sq = 0; sq < 64; ++sq) {
@@ -196,6 +196,103 @@ namespace chess {
             if (!isInCheck(next, board.sideToMove())) legal.push(move);
         }
         return legal;
+    }
+
+    namespace {
+
+        struct MaterialCount {
+            int pawnsRooksQueens = 0;
+            int knights = 0;
+            int bishops = 0;
+            int bishopSquareColor = -1;  // 0 dark, 1 light, of the last bishop seen
+        };
+
+        MaterialCount countMaterial(const Board& board, Color side) {
+            MaterialCount m;
+            for (Square s = 0; s < 64; ++s) {
+                Piece p = board.at(s);
+                if (!isColor(p, side)) continue;
+                switch (typeOf(p)) {
+                    case Knight: ++m.knights; break;
+                    case Bishop:
+                        ++m.bishops;
+                        m.bishopSquareColor = (fileOf(s) + rankOf(s)) % 2;
+                        break;
+                    case King: break;
+                    default: ++m.pawnsRooksQueens; break;
+                }
+            }
+            return m;
+        }
+
+    }  // namespace
+
+    bool cannotMate(const Board& board, Color side) {
+        MaterialCount m = countMaterial(board, side);
+        return m.pawnsRooksQueens == 0 && m.knights + m.bishops <= 1;
+    }
+
+    bool isInsufficientMaterial(const Board& board) {
+        MaterialCount w = countMaterial(board, White), b = countMaterial(board, Black);
+        if (w.pawnsRooksQueens || b.pawnsRooksQueens) return false;
+        int minors = w.knights + w.bishops + b.knights + b.bishops;
+        if (minors <= 1) return true;  // K v K, K+N v K, K+B v K
+        // K+B v K+B with both bishops on the same colour: neither can ever attack the
+        // squares the enemy king would need covered.
+        return w.knights == 0 && b.knights == 0 && w.bishops == 1 && b.bishops == 1 &&
+               w.bishopSquareColor == b.bishopSquareColor;
+    }
+
+    GameState gameState(const Board& board) {
+        // Checkmate and stalemate come first: a mate on the 100th halfmove still counts.
+        if (generateLegalMoves(board).empty())
+            return isInCheck(board, board.sideToMove()) ? GameState::Checkmate : GameState::Stalemate;
+        if (isInsufficientMaterial(board)) return GameState::InsufficientMaterial;
+        if (board.halfmoveClock() >= 100) return GameState::FiftyMoveRule;
+        return GameState::Ongoing;
+    }
+
+    namespace {
+
+        // The en passant square only makes a position different if a pawn can
+        // actually capture there. A double push with no enemy pawn beside it still
+        // sets epSquare_, and that position must match the same one without it.
+        Square effectiveEnPassant(const Board& b) {
+            Square ep = b.enPassantSquare();
+            if (ep == NoSquare) return NoSquare;
+            for (const Move& m : generateLegalMoves(b))
+                if (m.to == ep && typeOf(b.at(m.from)) == Pawn) return ep;
+            return NoSquare;
+        }
+
+        bool samePosition(const Board& a, const Board& b) {
+            if (a.sideToMove() != b.sideToMove() || a.castlingRights() != b.castlingRights()) return false;
+            for (Square s = 0; s < 64; ++s)
+                if (a.at(s) != b.at(s)) return false;
+            return effectiveEnPassant(a) == effectiveEnPassant(b);  // last: it generates moves
+        }
+
+    }  // namespace
+
+    bool isThreefoldRepetition(std::span<const Board> history) {
+        if (history.empty()) return false;
+        const Board& now = history.back();
+
+        // Nothing before the last capture or pawn move can come back, and the halfmove
+        // clock says how many plies ago that was. Only every second ply has the same
+        // side to move, so step back two at a time.
+        std::size_t lookBack = std::min<std::size_t>(now.halfmoveClock(), history.size() - 1);
+        int seen = 1;
+        for (std::size_t i = 2; i <= lookBack; i += 2)
+            if (samePosition(history[history.size() - 1 - i], now) && ++seen == 3) return true;
+        return false;
+    }
+
+    GameState gameState(std::span<const Board> history) {
+        GameState state = gameState(history.back());
+        if (state == GameState::Ongoing && isThreefoldRepetition(history))
+            return GameState::ThreefoldRepetition;
+        return state;
     }
 
     uint64_t perft(const Board& board, int depth) {

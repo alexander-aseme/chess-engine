@@ -23,6 +23,9 @@ struct Texture {
 // Loads a PNG (via stb_image) and uploads it with mipmaps. Returns id 0 on failure.
 Texture loadTexture(const char* path);
 
+// Uploads RGBA pixels that are already premultiplied by alpha.
+Texture createTexture(const unsigned char* rgba, int width, int height, bool mipmaps);
+
 // Minimal 2D batch renderer: collects coloured / textured quads into one
 // vertex buffer and draws them with as few draw calls as possible.
 // Coordinates are in window points with (0, 0) at the top-left.
@@ -36,7 +39,11 @@ public:
     void beginFrame(int windowW, int windowH, int fbW, int fbH, Color clear);
     void endFrame();
 
+    // Framebuffer pixels per window point this frame (2 on a Retina display).
+    float pixelScale() const { return pixelScale_; }
+
     void fillRect(Rect r, Color c);
+    void fillRoundedRect(Rect r, float radius, Color c);
     void drawCircle(float cx, float cy, float radius, Color c, int segments = 32);
     // Draws the sub-rectangle `src` (in texture pixels) of `tex` into `dst`.
     void drawSprite(const Texture& tex, Rect src, Rect dst, Color tint = {1, 1, 1, 1});
@@ -54,6 +61,7 @@ private:
     GLint uScreen_ = -1, uTex_ = -1;
     GLuint currentTex_ = 0;
     float screenW_ = 1, screenH_ = 1;
+    float pixelScale_ = 1;
     std::vector<Vertex> vertices_;
 };
 

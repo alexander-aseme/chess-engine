@@ -21,6 +21,8 @@ include(FetchContent)
 add_library(engine STATIC
   src/engine/board.cpp
   src/engine/movegen.cpp
+  src/engine/eval.cpp
+  src/engine/notation.cpp
 )
 target_include_directories(engine PUBLIC src)
 if(MSVC)
@@ -41,13 +43,27 @@ if(CHESS_BUILD_GUI)
     GIT_SHALLOW    TRUE)
   FetchContent_MakeAvailable(stb)
 
+  # miniaudio (single header audio playback; Web Audio under Emscripten).
+  # SOURCE_SUBDIR points at a folder that doesn't exist so only the header is
+  # downloaded and none of its own CMake targets are built.
+  FetchContent_Declare(miniaudio
+    GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+    GIT_TAG        0.11.21
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  header-only)
+  FetchContent_MakeAvailable(miniaudio)
+
   add_executable(chess
     src/main.cpp
     src/gui/renderer.cpp
     src/gui/game.cpp
+    src/gui/audio.cpp
+    src/gui/font.cpp
+    src/gui/settings.cpp
+    src/gui/ui.cpp
   )
   target_link_libraries(chess PRIVATE engine)
-  target_include_directories(chess PRIVATE src ${stb_SOURCE_DIR})
+  target_include_directories(chess PRIVATE src ${stb_SOURCE_DIR} ${miniaudio_SOURCE_DIR})
 
   if(EMSCRIPTEN)
     # Emscripten ships its own GLFW implementation on top of the browser canvas.
@@ -71,12 +87,22 @@ if(CHESS_BUILD_GUI)
     FetchContent_MakeAvailable(glfw)
     target_link_libraries(chess PRIVATE glfw)
 
+    # glad: generated GL 3.3 core loader (gen.glad.sh), committed in external/.
+    # Desktop only; Emscripten provides GLES3 itself.
+    add_library(glad STATIC external/glad/src/gl.c)
+    target_include_directories(glad PUBLIC external/glad/include)
+    target_link_libraries(chess PRIVATE glad)
+
     if(APPLE)
-      target_link_libraries(chess PRIVATE "-framework OpenGL")
-    else()
-      find_package(OpenGL REQUIRED)
-      target_link_libraries(chess PRIVATE OpenGL::GL)
+      target_link_libraries(chess PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework CoreFoundation")
+    elseif(UNIX)
+      # miniaudio needs threads, dlopen (for audio backends) and libm.
+      find_package(Threads REQUIRED)
+      target_link_libraries(chess PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m)
     endif()
+    # No OpenGL link on any platform: GLFW loads the GL library at runtime and
+    # glad fetches every function through glfwGetProcAddress.
 
     # Copy assets next to the executable so it runs from the build folder.
     add_custom_command(TARGET chess POST_BUILD

@@ -1,5 +1,6 @@
 #include "gui/renderer.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -93,6 +94,10 @@ Texture loadTexture(const char* path) {
     return t;
 }
 
+Texture createTexture(const unsigned char* rgba, int width, int height, bool mipmaps) {
+    return {uploadRGBA(rgba, width, height, mipmaps), width, height};
+}
+
 bool Renderer::init() {
     const GLuint vs = compileShader(GL_VERTEX_SHADER, kVertexSrc);
     const GLuint fs = compileShader(GL_FRAGMENT_SHADER, kFragmentSrc);
@@ -144,6 +149,7 @@ void Renderer::shutdown() {
 void Renderer::beginFrame(int windowW, int windowH, int fbW, int fbH, Color clear) {
     screenW_ = float(windowW > 0 ? windowW : 1);
     screenH_ = float(windowH > 0 ? windowH : 1);
+    pixelScale_ = fbW > 0 ? float(fbW) / screenW_ : 1.0f;
     glViewport(0, 0, fbW, fbH);
     glClearColor(clear.r, clear.g, clear.b, clear.a);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -189,6 +195,35 @@ void Renderer::fillRect(Rect r, Color c) {
     pushVertex(x0, y0, 0, 0, c);
     pushVertex(x1, y1, 1, 1, c);
     pushVertex(x0, y1, 0, 1, c);
+}
+
+// Three rectangles (a full-height middle and two side strips) plus a quarter-circle
+// fan in each corner. The pieces don't overlap, so translucent colours stay even.
+void Renderer::fillRoundedRect(Rect r, float radius, Color c) {
+    radius = std::min({radius, r.w / 2, r.h / 2});
+    if (radius <= 0.5f) return fillRect(r, c);
+    fillRect({r.x + radius, r.y, r.w - 2 * radius, r.h}, c);
+    fillRect({r.x, r.y + radius, radius, r.h - 2 * radius}, c);
+    fillRect({r.x + r.w - radius, r.y + radius, radius, r.h - 2 * radius}, c);
+
+    useTexture(whiteTex_);
+    const float corners[4][3] = {
+        // centre x, centre y, start angle (screen y points down)
+        {r.x + radius, r.y + radius, 3.14159265f},                   // top-left
+        {r.x + r.w - radius, r.y + radius, 4.71238898f},             // top-right
+        {r.x + r.w - radius, r.y + r.h - radius, 0.0f},              // bottom-right
+        {r.x + radius, r.y + r.h - radius, 1.57079633f},             // bottom-left
+    };
+    constexpr int kSteps = 8;
+    const float step = 1.57079633f / kSteps;
+    for (const auto& [cx, cy, start] : corners) {
+        for (int i = 0; i < kSteps; ++i) {
+            float a0 = start + step * float(i), a1 = start + step * float(i + 1);
+            pushVertex(cx, cy, 0.5f, 0.5f, c);
+            pushVertex(cx + std::cos(a0) * radius, cy + std::sin(a0) * radius, 0.5f, 0.5f, c);
+            pushVertex(cx + std::cos(a1) * radius, cy + std::sin(a1) * radius, 0.5f, 0.5f, c);
+        }
+    }
 }
 
 void Renderer::drawCircle(float cx, float cy, float radius, Color c, int segments) {

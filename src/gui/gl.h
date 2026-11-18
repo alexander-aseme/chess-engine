@@ -7,18 +7,12 @@
 #if defined(__EMSCRIPTEN__)
     #include <GLES3/gl3.h>
     #define CHESS_GLSL_HEADER "#version 300 es\nprecision mediump float;\n"
-#elif defined(__APPLE__)
-    #define GL_SILENCE_DEPRECATION  // Apple deprecated GL in 2018; it still works (up to 4.1)
-    #include <OpenGL/gl3.h>
-    #define CHESS_GLSL_HEADER "#version 330 core\n"
-#elif defined(__linux__)
-    #define GL_GLEXT_PROTOTYPES     // Mesa exports core GL functions directly
-    #include <GL/glcorearb.h>
-    #define CHESS_GLSL_HEADER "#version 330 core\n"
 #else
-    // Windows needs a function loader for anything newer than GL 1.1.
-    // Generate one at https://gen.glad.sh (GL 3.3 core) and include it here.
-    #error "Add a GL loader (e.g. glad) for this platform"
+    // Desktop: glad loads GL 3.3 core functions from the driver at runtime
+    // (gladLoadGL after the context is created). Its header declares only
+    // GL 3.3 core, so anything newer fails to compile.
+    #include <glad/gl.h>
+    #define CHESS_GLSL_HEADER "#version 330 core\n"
 #endif
 
 #define GLFW_INCLUDE_NONE  // we include GL ourselves, above
