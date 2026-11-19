@@ -22,8 +22,9 @@ cmake --build build -j
 CMake downloads GLFW and stb_image on the first configure, so you need an
 internet connection the first time.
 
-The game opens on a menu: pick an opponent (two players on one device for now)
-and a time control, then Start. Drag a piece, or click it and then click a
+The game opens on a menu: pick an opponent (two players on one device, or the
+computer at one of four strengths, playing White, Black or a random colour) and
+a time control, then Start. Drag a piece, or click it and then click a
 square; promotions open a picker. Click a move in the list to jump to it.
 
 | Key | Action |
@@ -91,12 +92,10 @@ assets/        pieces.png
 - [x] Text rendering (move list, coordinates, game result)
 - [x] Evaluation: material + piece-square tables
 - [x] Menu, settings, match score, chess clocks, insufficient-material draws
-- [ ] Play against the computer (needs the search below)
-- [ ] Online play
-- [ ] Search: negamax + alpha-beta, iterative deepening, quiescence, move ordering
-- [ ] Transposition table with Zobrist hashing
-- [ ] Run search on a background thread (Web Worker on the web) so the UI never freezes
-- [ ] Bitboards for speed
+- [x] Search: negamax + alpha-beta, iterative deepening, quiescence, move ordering
+- [x] Play against the computer (four strengths; search on a background thread)
+- [x] Transposition table with Zobrist hashing
+- [ ] Background search in the browser build too (it currently pauses the page while thinking)
 - [ ] UCI mode: test against other engines and estimate Elo
 
 ## Credits

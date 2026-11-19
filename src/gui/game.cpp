@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <random>
 #include <string>
 
 #include "engine/eval.h"
@@ -60,13 +61,20 @@ enum : int {
     IdMenuButton = 1, IdSettingsButton, IdNextGame, IdBannerNext, IdBannerReview,
     IdStart, IdResume, IdMenuSettings, IdSettingsDone, IdVolume, IdAutoFlip, IdCloseMenu,
     IdCloseSettings, IdMenuBackdrop, IdSettingsBackdrop, IdQuit,
-    IdModeBase = 100, IdTimeBase = 200,
+    IdModeBase = 100, IdTimeBase = 200, IdColorBase = 300, IdLevelBase = 400,
 };
 
 constexpr int kSpriteCell = 128;  // must match tools/make_piece_atlas.py
 
 // Order the promotion picker lists the pieces in, starting on the promotion square.
 constexpr PieceType kPromotionChoices[] = {Queen, Knight, Rook, Bishop};
+
+constexpr int64_t kMinThinkMs = 500;  // the computer never answers faster than this
+
+uint64_t randomBits() {
+    static std::mt19937_64 rng{std::random_device{}()};
+    return rng();
+}
 
 int64_t nowMs() {
     using namespace std::chrono;
@@ -164,7 +172,10 @@ bool Game::init() {
     return true;
 }
 
+Game::~Game() { cancelSearch(); }
+
 void Game::shutdown() {
+    cancelSearch();
     audio_.shutdown();
     font_.shutdown();
     boldFont_.shutdown();
@@ -175,15 +186,20 @@ void Game::shutdown() {
 // Match and game flow
 // --------------------------------------------------------------------------
 
+// Player 1 (you, against the computer) starts as white, black or a coin toss.
 void Game::newMatch() {
     halfPoints_[0] = halfPoints_[1] = 0;
-    player1White_ = true;
+    if (mode_ == Mode::Computer && colorChoice_ == 2) player1White_ = randomBits() % 2 == 0;
+    else player1White_ = mode_ != Mode::Computer || colorChoice_ == 0;
     gameNumber_ = 1;
     matchStarted_ = true;
     newGame();
 }
 
 void Game::newGame() {
+    cancelSearch();  // the search thread is done with table_ before it's cleared
+    ++searchGen_;
+    table_.clear();
     positions_ = {Board{}};
     moves_.clear();
     sans_.clear();
@@ -204,6 +220,7 @@ void Game::nextGame() {
 
 void Game::finish(Outcome outcome, std::string reason) {
     if (gameOver()) return;
+    cancelSearch();  // e.g. the computer's flag fell while it was thinking
     result_ = {outcome, std::move(reason)};
     bannerHidden_ = false;
     clock_.stop(nowMs());
@@ -257,10 +274,82 @@ void Game::resumeGame() {
 }
 
 bool Game::canMove() const {
-    if (modal_ != Modal::None || gameOver() || mode_ != Mode::Local) return false;
+    if (modal_ != Modal::None || gameOver()) return false;
+    if (mode_ == Mode::Computer && board().sideToMove() == computerColor()) return false;  // its turn
     // With a clock running, takebacks would let a player rewind time spent; only the
     // latest position is playable. Untimed games allow playing from earlier moves.
     return !clock_.enabled() || ply_ + 1 == positions_.size();
+}
+
+// --------------------------------------------------------------------------
+// Computer opponent
+// --------------------------------------------------------------------------
+
+std::string Game::playerName(int player) const {
+    if (mode_ == Mode::Computer) return player == 0 ? "You" : "Computer";
+    return player == 0 ? "Player 1" : "Player 2";
+}
+
+bool Game::computerToMove() const {
+    return mode_ == Mode::Computer && !gameOver() && latest().sideToMove() == computerColor();
+}
+
+void Game::updateComputer() {
+    if (searching_) {
+        if (!searchDone_.load(std::memory_order_acquire)) return;
+        if (modal_ != Modal::None) return;                     // play it once the menu closes
+        if (nowMs() - searchStartMs_ < kMinThinkMs) return;  // an instant reply feels abrupt
+        if (searchThread_.joinable()) searchThread_.join();
+        searching_ = false;
+        if (searchStartGen_ != searchGen_ || !computerToMove() || searchResult_.best.from == NoSquare) return;
+        goTo(positions_.size() - 1);  // if the player is looking at an earlier move, come back
+        play(searchResult_.best);
+        return;
+    }
+    if (computerToMove() && modal_ == Modal::None) startSearch();
+}
+
+// Thinks for the level's time per move, or less when the clock is short: about a
+// thirtieth of what's left plus most of the increment, and never over a quarter.
+void Game::startSearch() {
+    const ComputerLevel& level = kComputerLevels[level_];
+    int64_t budget = level.timeMs;
+    if (clock_.enabled()) {
+        int64_t left = clock_.remaining(computerColor(), nowMs());
+        int64_t increment = int64_t(kTimeControls[timeControl_].incrementSeconds) * 1000;
+        budget = std::max<int64_t>(20, std::min({budget, left / 30 + increment * 3 / 4, left / 4}));
+    }
+    SearchLimits limits{.maxDepth = level.maxDepth,
+                        .timeMs = budget,
+                        .evalNoise = level.evalNoise,
+                        .seed = randomBits(),
+                        .quiescence = level.quiescence,
+                        .blunderPercent = level.blunderPercent,
+                        .blunderMaxLoss = level.blunderMaxLoss};
+
+    stopSearch_ = false;
+    searchDone_ = false;
+    searching_ = true;
+    searchStartGen_ = searchGen_;
+    searchStartMs_ = nowMs();
+#ifdef __EMSCRIPTEN__
+    // No threads in the browser build (they need special server headers), so the
+    // search runs right here; the page pauses for the time budget.
+    searchResult_ = search(positions_, limits, &stopSearch_, {}, &table_);
+    searchDone_ = true;
+#else
+    searchThread_ = std::thread([this, history = positions_, limits] {
+        searchResult_ = search(history, limits, &stopSearch_, {}, &table_);
+        searchDone_.store(true, std::memory_order_release);
+    });
+#endif
+}
+
+void Game::cancelSearch() {
+    if (!searching_) return;
+    stopSearch_ = true;
+    if (searchThread_.joinable()) searchThread_.join();
+    searching_ = false;
 }
 
 Move Game::lastMove() const { return ply_ > 0 ? moves_[ply_ - 1] : Move{}; }
@@ -289,6 +378,10 @@ bool Game::tryMove(Square from, Square to) {
 }
 
 void Game::play(const Move& m) {
+    if (ply_ + 1 != positions_.size()) {  // a takeback: any search was for the old line
+        cancelSearch();
+        ++searchGen_;
+    }
     Board next = board();
     next.makeMove(m);
 
@@ -323,8 +416,11 @@ void Game::goTo(std::size_t ply) {
     if (ply_ + 1 == positions_.size()) faceSideToMove();  // reviewing old moves doesn't spin the board
 }
 
+// Against the computer the board always faces you; in local games it follows the
+// side to move if that setting is on.
 void Game::faceSideToMove() {
-    if (settings_.autoFlip && mode_ == Mode::Local) flipped_ = latest().sideToMove() == Black;
+    if (mode_ == Mode::Computer) flipped_ = !player1White_;
+    else if (settings_.autoFlip && mode_ == Mode::Local) flipped_ = latest().sideToMove() == Black;
 }
 
 // --------------------------------------------------------------------------
@@ -400,6 +496,7 @@ void Game::layout(float windowW, float windowH) {
 
 void Game::draw(Renderer& r, float windowW, float windowH) {
     tickClock();
+    updateComputer();
     layout(windowW, windowH);
     ui_.begin(r, font_, boldFont_);
     ui_.setInteractive(modal_ == Modal::None);
@@ -491,8 +588,10 @@ void Game::drawPlayerCard(Renderer& r, Rect card, chess::Color side) {
 
     int player = playerOf(side);
     float tx = card.x + 34;
-    boldFont_.draw(r, player == 0 ? "Player 1" : "Player 2", tx, card.y + 6, 14, kText);
-    font_.draw(r, "Score " + formatPoints(halfPoints_[player]), tx, card.y + 25, 12, kMutedText);
+    boldFont_.draw(r, playerName(player), tx, card.y + 6, 14, kText);
+    std::string detail = "Score " + formatPoints(halfPoints_[player]);
+    if (mode_ == Mode::Computer && player == 1) detail = std::string(kComputerLevels[level_].name) + "  " + detail;
+    font_.draw(r, detail, tx, card.y + 25, 12, kMutedText);
 
     if (!clock_.enabled()) return;
     int64_t ms = clock_.remaining(side, nowMs());
@@ -534,8 +633,11 @@ void Game::drawPanel(Renderer& r) {
         std::snprintf(line, sizeof line, "%s   %s", score, who);
     } else {
         chess::Color side = board().sideToMove();
-        const char* status = isInCheck(board(), side) ? (side == White ? "White is in check" : "Black is in check")
-                                                      : (side == White ? "White to move" : "Black to move");
+        bool check = isInCheck(board(), side);
+        const char* status = check ? (side == White ? "White is in check" : "Black is in check")
+                                   : (side == White ? "White to move" : "Black to move");
+        if (mode_ == Mode::Computer && atEnd)
+            status = computerToMove() ? "Thinking..." : check ? "You're in check" : "Your move";
         boldFont_.draw(r, status, x, y, 16, kText);
         char eval[16];
         std::snprintf(eval, sizeof eval, "%+.2f", evaluateWhite(board()) / 100.0);
@@ -646,8 +748,8 @@ void Game::drawGameOver(Renderer& r) {
                       : result_.outcome == Outcome::BlackWins ? "Black wins"
                                                               : "Draw";
     std::string outcome = std::string(score) + "   " + who;
-    std::string match = "Player 1  " + formatPoints(halfPoints_[0]) + " - " + formatPoints(halfPoints_[1]) +
-                        "  Player 2";
+    std::string match = playerName(0) + "  " + formatPoints(halfPoints_[0]) + " - " + formatPoints(halfPoints_[1]) +
+                        "  " + playerName(1);
 
     float titleSize = std::clamp(squareSize_ * 0.36f, 18.0f, 34.0f);
     float outcomeSize = std::max(14.0f, titleSize * 0.6f);
@@ -678,11 +780,13 @@ void Game::drawGameOver(Renderer& r) {
     if (ui_.button(IdBannerReview, {cx + 5, y, buttonW, kButtonHeight}, "Review")) bannerHidden_ = true;
 }
 
-// Start screen and pause menu: opponent, time control, start / resume.
+// Start screen and pause menu: opponent (plus colour and strength against the
+// computer), time control, start / resume. Choices apply when Start is pressed.
 void Game::drawMenu(Renderer& r) {
     float pad = 20;
     float cw = std::min(380.0f, windowW_ - 32);
-    float h = pad + 36 + 20 + 3 * 46 + 10 + 18 + 22 + 2 * 54 + 8 + 42 + 8 + 36 + pad;
+    bool computer = menuMode_ == Mode::Computer;
+    float h = pad + 36 + 20 + 54 + 10 + (computer ? 2 * (20 + 40) : 0) + 18 + 22 + 2 * 54 + 8 + 42 + 8 + 36 + pad;
     Rect card{(windowW_ - cw) / 2, std::max(16.0f, (windowH_ - h) / 2), cw, h};
     if (ui_.modal(IdMenuBackdrop, {0, 0, windowW_, windowH_}, card)) return resumeGame();
     ui_.card(card);
@@ -693,25 +797,40 @@ void Game::drawMenu(Renderer& r) {
         resumeGame();
     y += 36;
 
+    float third = (w - 16) / 3;
     font_.draw(r, "OPPONENT", x, y, 11, kMutedText);
     y += 20;
     struct ModeOption {
         const char* label;
         Mode mode;
-        bool available;
     };
-    constexpr ModeOption modes[] = {
-        {"Two players on this device", Mode::Local, true},
-        {"Play the computer", Mode::Computer, false},
-        {"Play online", Mode::Online, false},
-    };
-    for (int i = 0; i < 3; ++i) {
-        if (ui_.option(IdModeBase + i, {x, y, w, 40}, modes[i].label, mode_ == modes[i].mode, modes[i].available,
-                       modes[i].available ? "" : "Coming soon"))
-            mode_ = modes[i].mode;
-        y += 46;
+    constexpr ModeOption modes[] = {{"Two players", Mode::Local}, {"Computer", Mode::Computer}};
+    float half = (w - 8) / 2;
+    for (int i = 0; i < 2; ++i) {
+        Rect tile{x + float(i) * (half + 8), y, half, 48};
+        if (ui_.option(IdModeBase + i, tile, modes[i].label, menuMode_ == modes[i].mode)) menuMode_ = modes[i].mode;
     }
-    y += 10;
+    y += 54 + 10;
+
+    if (computer) {
+        font_.draw(r, "YOU PLAY", x, y, 11, kMutedText);
+        y += 20;
+        constexpr const char* colors[] = {"White", "Black", "Random"};
+        for (int i = 0; i < 3; ++i)
+            if (ui_.option(IdColorBase + i, {x + float(i) * (third + 8), y, third, 34}, colors[i], menuColor_ == i))
+                menuColor_ = i;
+        y += 40;
+
+        font_.draw(r, "STRENGTH", x, y, 11, kMutedText);
+        y += 20;
+        int levels = int(std::size(kComputerLevels));
+        float quarter = (w - 8 * float(levels - 1)) / float(levels);
+        for (int i = 0; i < levels; ++i)
+            if (ui_.option(IdLevelBase + i, {x + float(i) * (quarter + 8), y, quarter, 34}, kComputerLevels[i].name,
+                           menuLevel_ == i))
+                menuLevel_ = i;
+        y += 40;
+    }
 
     font_.draw(r, "TIME CONTROL", x, y, 11, kMutedText);
     y += 18;
@@ -726,7 +845,10 @@ void Game::drawMenu(Renderer& r) {
     y += 2 * 54 + 8;
 
     if (ui_.button(IdStart, {x, y, w, 42}, matchStarted_ ? "Start new match (score 0-0)" : "Start", true)) {
+        mode_ = menuMode_;
         timeControl_ = menuTimeControl_;
+        level_ = menuLevel_;
+        colorChoice_ = menuColor_;
         newMatch();
         setModal(Modal::None);
     }

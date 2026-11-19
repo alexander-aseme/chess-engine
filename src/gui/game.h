@@ -1,12 +1,15 @@
 #pragma once
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "engine/board.h"
 #include "engine/clock.h"
 #include "engine/movegen.h"
+#include "engine/search.h"
 #include "gui/audio.h"
 #include "gui/font.h"
 #include "gui/renderer.h"
@@ -15,9 +18,8 @@
 
 namespace gui {
 
-// How the opponent is chosen. Only Local is playable so far; the others show in
-// the menu as "coming soon".
-enum class Mode { Local, Computer, Online };
+// Who you play: another person at the same device, or the computer.
+enum class Mode { Local, Computer };
 
 // "3+2" means 3 minutes each, plus 2 seconds added after every move.
 struct TimeControl {
@@ -32,12 +34,40 @@ inline constexpr TimeControl kTimeControls[] = {
     {"5+0", "Blitz", 5, 0},          {"10+0", "Rapid", 10, 0}, {"15+10", "Rapid", 15, 10},
 };
 
+// How strongly the computer plays. Weaker levels search less deeply, misjudge
+// positions on purpose (evaluation noise, in centipawns), and Easy also skips the
+// capture search and makes deliberate mistakes. timeMs is the most it spends per
+// move, less when its clock is short. See chess::SearchLimits for each setting.
+struct ComputerLevel {
+    const char* name;
+    int maxDepth;
+    int64_t timeMs;
+    int evalNoise;
+    bool quiescence;
+    int blunderPercent;
+    int blunderMaxLoss;  // centipawns; deliberate mistakes lose between 1 pawn and this
+};
+
+inline constexpr ComputerLevel kComputerLevels[] = {
+    // Easy: 1 ply, misses recaptures, noise bigger than a minor piece, and on about
+    // every other move a deliberate mistake of 1-6 pawns: hanging a piece or even a
+    // rook, or not taking one you left hanging.
+    {"Easy", 1, 400, 400, false, 50, 600},
+    // Medium: sees replies and finishes exchanges, but judges positions loosely.
+    {"Medium", 2, 600, 120, true, 0, 0},
+    // Hard: a solid 4-ply search with a little noise so it's not machine-perfect.
+    {"Hard", 4, 1200, 30, true, 0, 0},
+    // Max: the engine at full strength.
+    {"Max", chess::kMaxPly, 4000, 0, true, 0, 0},
+};
+
 // The playable chess view: the board, the side panel and the menus. It owns the
 // match (players, score, time control), the current game record and the clock,
 // and turns mouse/keyboard input into moves. All chess rules live in the engine;
 // this class only asks it.
 class Game {
 public:
+    ~Game();      // stops a computer search that's still running
     bool init();  // load textures, fonts, sounds and settings; needs the GL context
     void shutdown();
 
@@ -93,11 +123,19 @@ private:
     // --- Match: a series of games between the same two players ---
     // Player 0 is "Player 1". Colours swap every game; points are counted in
     // half points (win 2, draw 1) so a draw's ½ stays an integer.
+    // Against the computer, player 0 is the human ("You") and player 1 the computer.
     Mode mode_ = Mode::Local;
     int timeControl_ = 0;        // index into kTimeControls for this match
-    int menuTimeControl_ = 0;    // the menu's selection, applied on Start
+    int level_ = 1;              // index into kComputerLevels
+    int colorChoice_ = 0;        // the human's colour vs the computer: 0 White, 1 Black, 2 Random
     bool matchStarted_ = false;  // false until the first Start, so the menu has no Resume
     bool player1White_ = true;
+
+    // The menu's selections, applied when Start is pressed.
+    Mode menuMode_ = Mode::Local;
+    int menuTimeControl_ = 0;
+    int menuLevel_ = 1;
+    int menuColor_ = 0;
     int halfPoints_[2] = {0, 0};
     int gameNumber_ = 1;
 
@@ -117,6 +155,23 @@ private:
 
     chess::ChessClock clock_;
     bool clockPausedForModal_ = false;
+
+    // --- Computer opponent ---
+    // The search runs on searchThread_ so the window stays responsive. It works on a
+    // copy of the game record; when it finishes, updateComputer() plays the move on
+    // the main thread. searchGen_ changes whenever the record changes in a way that
+    // makes a running search stale (new game, a takeback), and a result from an
+    // older generation is thrown away.
+    std::thread searchThread_;
+    std::atomic<bool> stopSearch_{false};
+    std::atomic<bool> searchDone_{false};
+    bool searching_ = false;
+    chess::SearchResult searchResult_;  // written by the thread before searchDone_ is set
+    // Shared by the computer's searches within a game, so each move builds on what
+    // the previous ones learned. Only the search thread touches it while it runs.
+    chess::TranspositionTable table_{32};
+    uint64_t searchGen_ = 0, searchStartGen_ = 0;
+    int64_t searchStartMs_ = 0;
 
     chess::Square selected_ = chess::NoSquare;
     std::vector<chess::Move> selectedMoves_;  // legal moves from selected_
@@ -145,6 +200,13 @@ private:
     bool gameOver() const { return result_.outcome != Outcome::None; }
     bool canMove() const;
     int playerOf(chess::Color c) const { return (c == chess::White) == player1White_ ? 0 : 1; }
+    std::string playerName(int player) const;
+    chess::Color computerColor() const { return player1White_ ? chess::Black : chess::White; }
+    bool computerToMove() const;  // vs computer, at the latest position, its turn, game on
+
+    void updateComputer();  // each frame: start a search when it's the computer's turn, play its result
+    void startSearch();
+    void cancelSearch();
 
     chess::Square squareAt(float x, float y) const;
     Rect squareRect(chess::Square s) const;

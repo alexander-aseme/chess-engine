@@ -23,6 +23,12 @@ constexpr float kTextSize = 14;
 
 bool contains(Rect r, float x, float y) { return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h; }
 
+// The text size that fits `text` in `width` points: `size`, or smaller if needed.
+float fitSize(const Renderer& r, Font& f, std::string_view text, float size, float width) {
+    float w = f.measure(r, text, size);
+    return w > width && w > 0 ? std::max(9.0f, size * width / w) : size;
+}
+
 }  // namespace
 
 bool Ui::mouseDown(float x, float y) {
@@ -120,8 +126,9 @@ bool Ui::button(int id, Rect r, std::string_view label, bool primary, bool enabl
     Color bg = !enabled ? kButtonDisabled : primary ? (hot ? kAccentHover : kAccent) : (hot ? kButtonHover : kButton);
     r_->fillRoundedRect(r, kRadius, bg);
     Font& f = primary ? *bold_ : *regular_;
-    float w = f.measure(*r_, label, kTextSize);
-    f.draw(*r_, label, r.x + (r.w - w) / 2, r.y + (r.h - kTextSize) / 2, kTextSize, enabled ? kText : kMuted);
+    float size = fitSize(*r_, f, label, kTextSize, r.w - 12);
+    float w = f.measure(*r_, label, size);
+    f.draw(*r_, label, r.x + (r.w - w) / 2, r.y + (r.h - size) / 2, size, enabled ? kText : kMuted);
     return clicked;
 }
 
@@ -134,8 +141,9 @@ bool Ui::option(int id, Rect r, std::string_view label, bool selected, bool enab
     float y = r.y + (r.h - kTextSize) / 2;
     Font& f = selected ? *bold_ : *regular_;  // measure with the font it's drawn in
     if (note.empty()) {  // centred, like a chip
-        float w = f.measure(*r_, label, kTextSize);
-        f.draw(*r_, label, r.x + (r.w - w) / 2, y, kTextSize, enabled ? kText : kMuted);
+        float size = fitSize(*r_, f, label, kTextSize, r.w - 10);
+        float w = f.measure(*r_, label, size);
+        f.draw(*r_, label, r.x + (r.w - w) / 2, r.y + (r.h - size) / 2, size, enabled ? kText : kMuted);
     } else {  // label left, note right, like a list row
         f.draw(*r_, label, r.x + 12, y, kTextSize, enabled ? kText : kMuted);
         float noteSize = 12;
@@ -145,18 +153,20 @@ bool Ui::option(int id, Rect r, std::string_view label, bool selected, bool enab
     return clicked;
 }
 
-bool Ui::tile(int id, Rect r, std::string_view label, std::string_view sublabel, bool selected) {
-    bool clicked = interact(id, r, true);
-    Color bg = selected ? kAccent : hovered(r) ? kButtonHover : kButton;
+bool Ui::tile(int id, Rect r, std::string_view label, std::string_view sublabel, bool selected, bool enabled) {
+    bool clicked = interact(id, r, enabled);
+    Color bg = selected ? kAccent : !enabled ? kButtonDisabled : hovered(r) ? kButtonHover : kButton;
     r_->fillRoundedRect(r, kRadius, bg);
 
-    float subSize = 11, gap = 3;
-    float top = r.y + (r.h - kTextSize - gap - subSize) / 2;
+    float gap = 3;
     Font& f = selected ? *bold_ : *regular_;
-    f.draw(*r_, label, r.x + (r.w - f.measure(*r_, label, kTextSize)) / 2, top, kTextSize, kText);
+    float size = fitSize(*r_, f, label, kTextSize, r.w - 10);
+    float subSize = fitSize(*r_, *regular_, sublabel, 11, r.w - 10);
+    float top = r.y + (r.h - size - gap - subSize) / 2;
+    f.draw(*r_, label, r.x + (r.w - f.measure(*r_, label, size)) / 2, top, size, enabled ? kText : kMuted);
     Color subColor = selected ? Color{kText.r, kText.g, kText.b, 0.8f} : kMuted;
     regular_->draw(*r_, sublabel, r.x + (r.w - regular_->measure(*r_, sublabel, subSize)) / 2,
-                   top + kTextSize + gap, subSize, subColor);
+                   top + size + gap, subSize, subColor);
     return clicked;
 }
 

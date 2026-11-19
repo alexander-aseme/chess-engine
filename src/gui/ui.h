@@ -40,7 +40,8 @@ public:
     bool option(int id, Rect r, std::string_view label, bool selected, bool enabled = true,
                 std::string_view note = {});
     // A selectable tile with a main label and a smaller line under it.
-    bool tile(int id, Rect r, std::string_view label, std::string_view sublabel, bool selected);
+    bool tile(int id, Rect r, std::string_view label, std::string_view sublabel, bool selected,
+              bool enabled = true);
     // A borderless icon button (e.g. "×" to close a card); highlights on hover.
     bool iconButton(int id, Rect r, std::string_view icon);
     // A labelled on/off switch filling row `r`. Returns true when flipped.

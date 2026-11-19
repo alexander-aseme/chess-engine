@@ -16,6 +16,7 @@
 #include "engine/eval.h"
 #include "engine/movegen.h"
 #include "engine/notation.h"
+#include "engine/search.h"
 
 using namespace chess;
 
@@ -324,6 +325,179 @@ static void testSAN() {
           "SAN checkmate");
 }
 
+// Visits every position up to `depth` plies from b and counts those whose
+// incrementally updated key differs from the key computed from scratch.
+static int keyMismatches(const Board& b, int depth) {
+    int bad = b.key() != b.computeKey();
+    if (depth == 0) return bad;
+    for (const Move& m : generateLegalMoves(b)) {
+        Board next = b;
+        next.makeMove(m);
+        bad += keyMismatches(next, depth - 1);
+    }
+    return bad;
+}
+
+static uint64_t keyOf(const char* fen) {
+    Board b;
+    b.loadFEN(fen);
+    return b.key();
+}
+
+static void testZobrist() {
+    // The perft positions between them exercise castling, en passant and every promotion.
+    const char* fens[] = {
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+        "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+        "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+    };
+    int mismatches = 0;
+    for (const char* fen : fens) {
+        Board b;
+        b.loadFEN(fen);
+        mismatches += keyMismatches(b, 3);
+    }
+    check(mismatches == 0, "incremental key equals key from scratch in every position 3 plies deep (" +
+                               std::to_string(mismatches) + " mismatches)");
+
+    auto a = playLine(kStartFEN.data(), {{E2, E4}, {G8, F6}, {B1, C3}});
+    auto b = playLine(kStartFEN.data(), {{B1, C3}, {G8, F6}, {E2, E4}});
+    check(a.back().key() == b.back().key(), "transposed move orders give the same key");
+
+    check(keyOf("4k3/8/8/8/8/8/8/4K2R w K - 0 1") != keyOf("4k3/8/8/8/8/8/8/4K2R b K - 0 1"),
+          "side to move changes the key");
+    check(keyOf("4k3/8/8/8/8/8/8/4K2R w K - 0 1") != keyOf("4k3/8/8/8/8/8/8/4K2R w - - 0 1"),
+          "castling rights change the key");
+    check(keyOf("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2") != keyOf("4k3/8/8/3pP3/8/8/8/4K3 w - - 0 2"),
+          "a usable en passant square changes the key");
+    check(keyOf("4k3/8/8/3p4/8/8/8/4K3 w - d6 0 2") == keyOf("4k3/8/8/3p4/8/8/8/4K3 w - - 0 2"),
+          "an unusable en passant square doesn't");
+    check(keyOf("4k3/8/8/8/8/8/8/4K2R w K - 0 1") == keyOf("4k3/8/8/8/8/8/8/4K2R w K - 37 60"),
+          "the clocks aren't part of the key");
+}
+
+static SearchResult searchFEN(const char* fen, int depth, int64_t timeMs = 0) {
+    Board b;
+    b.loadFEN(fen);
+    return search(std::span(&b, 1), {.maxDepth = depth, .timeMs = timeMs});
+}
+
+static bool isLegal(const Board& b, const Move& m) {
+    for (const Move& legal : generateLegalMoves(b))
+        if (legal == m) return true;
+    return false;
+}
+
+static void testSearch() {
+    // Back-rank mate: Ra8#.
+    SearchResult r = searchFEN("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1", 3);
+    check(r.best == Move{A1, A8} && r.score == kMateScore - 1, "search finds mate in 1 (back rank)");
+
+    // Scholar's mate: Qxf7#.
+    r = searchFEN("r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4", 3);
+    check(r.best == Move{H5, F7} && r.score == kMateScore - 1, "search finds mate in 1 (scholar's mate)");
+
+    // Morphy's problem, mate in 2: 1.Ra6! bxa6 2.b7#, or 1...Bxb6/Bc7 etc. 2.Rxa7#.
+    r = searchFEN("kbK5/pp6/1P6/8/8/8/8/R7 w - - 0 1", 5);
+    check(r.best == Move{A1, A6} && r.score == kMateScore - 3, "search finds mate in 2 (Ra6!)");
+
+    // Being mated: black's king is boxed in (Bc4 covers g8, Kh6 covers g7/h7), so
+    // whichever pawn move it plays, Rb8# follows. Mate against the side to move in
+    // 2 plies scores -(kMateScore - 2). (With a single legal move the search stops
+    // after depth 1, so this position gives black two pawn moves to choose from.)
+    r = searchFEN("7k/p7/7K/8/2B5/8/8/1R6 b - - 0 1", 3);
+    check(r.score == -(kMateScore - 2), "search scores a forced mate against it");
+
+    // A free queen is taken.
+    r = searchFEN("4k3/8/8/3q4/8/8/3R4/4K3 w - - 0 1", 3);
+    check(r.best == Move{D2, D5}, "search takes a free queen");
+
+    // Qxd5 wins a pawn but loses the queen to cxd5: quiescence sees the recapture.
+    r = searchFEN("4k3/8/2p5/3p4/8/8/3Q4/4K3 w - - 0 1", 2);
+    check(!(r.best == Move{D2, D5}), "search doesn't trade its queen for a defended pawn");
+
+    // Winning with K+Q v K, but many queen moves stalemate: the search must not pick one.
+    Board stale;
+    stale.loadFEN("7k/8/5Q2/8/8/8/8/K7 w - - 0 1");
+    r = search(std::span(&stale, 1), {.maxDepth = 4});
+    Board after = stale;
+    after.makeMove(r.best);
+    check(gameState(after) != GameState::Stalemate && r.score > 500, "search avoids stalemating when winning");
+
+    // With a game history (here the current position has occurred before), the
+    // search still returns a legal move.
+    auto shuffle = playLine("7k/8/8/8/8/8/1Q6/K7 b - - 0 1", {{H8, G8}, {B2, B3}, {G8, H8}, {B3, B2}});
+    r = search(shuffle, {.maxDepth = 3});
+    check(isLegal(shuffle.back(), r.best), "search with game history returns a legal move");
+
+    // Every result is legal; the time limit is respected; a stop request still yields a move.
+    Board start;
+    r = search(std::span(&start, 1), {.maxDepth = 4});
+    check(isLegal(start, r.best) && r.depth == 4, "search returns a legal move at depth 4 from the start");
+
+    auto t0 = std::chrono::steady_clock::now();
+    r = search(std::span(&start, 1), {.maxDepth = kMaxPly, .timeMs = 300});
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    check(isLegal(start, r.best) && ms < 600, "search stops near its time limit (" + std::to_string(ms) +
+                                                  " ms for 300, depth " + std::to_string(r.depth) + ")");
+
+    std::atomic<bool> stopNow{true};
+    r = search(std::span(&start, 1), {.maxDepth = 10}, &stopNow);
+    check(isLegal(start, r.best), "search stopped at once still returns a legal move");
+
+    // Transposition table: entries come back for their own key only, and a deeper
+    // result isn't overwritten by a shallower one for the same position.
+    TranspositionTable tt(1);
+    tt.store(12345, 5, 77, TranspositionTable::Bound::Exact, Move{E2, E4});
+    const auto* e = tt.probe(12345);
+    tt.store(12345, 2, -10, TranspositionTable::Bound::Upper, Move{D2, D4});
+    check(e && tt.probe(12345)->score == 77 && tt.probe(12345)->best == (Move{E2, E4}) && !tt.probe(54321),
+          "transposition table stores, finds, and keeps the deeper entry");
+
+    // A shared table reused across searches (as the game does move after move) must
+    // still give exact mate scores: they're stored relative to each position.
+    tt.clear();
+    Board morphy;
+    morphy.loadFEN("kbK5/pp6/1P6/8/8/8/8/R7 w - - 0 1");
+    SearchResult first = search(std::span(&morphy, 1), {.maxDepth = 5}, nullptr, {}, &tt);
+    SearchResult again = search(std::span(&morphy, 1), {.maxDepth = 5}, nullptr, {}, &tt);
+    check(first.best == Move{A1, A6} && again.best == Move{A1, A6} && again.score == kMateScore - 3 &&
+              again.nodes < first.nodes,
+          "a reused table keeps mate scores exact and saves work (" + std::to_string(first.nodes) + " then " +
+              std::to_string(again.nodes) + " nodes)");
+
+    // Weakening: without the capture search, a 1-ply search grabs the defended pawn
+    // and loses its queen to cxd5, a typical beginner's mistake.
+    Board greedy;
+    greedy.loadFEN("4k3/8/2p5/3p4/8/8/3Q4/4K3 w - - 0 1");
+    r = search(std::span(&greedy, 1), {.maxDepth = 1, .quiescence = false});
+    check(r.best == Move{D2, D5}, "with the capture search off, it falls for a defended pawn");
+
+    // Deliberate mistakes. The pawn on d5 attacks the knight: every knight move saves
+    // it, every king move loses it (about 3 pawns worse, inside the 1-4 pawn band).
+    Board attacked;
+    attacked.loadFEN("4k3/8/8/3p4/4N3/8/8/4K3 w - - 0 1");
+    r = search(std::span(&attacked, 1), {.maxDepth = 3});
+    SearchResult blunder = search(std::span(&attacked, 1), {.maxDepth = 3, .seed = 7, .blunderPercent = 100});
+    check(r.best.from == E4 && blunder.best.from == E1,
+          "a deliberate mistake picks a clearly worse move (" + toSAN(attacked, blunder.best) + " instead of " +
+              toSAN(attacked, r.best) + ")");
+
+    // ...but never one that's far worse. With mate in one available, every other
+    // move is vastly worse than the band allows, so the mate is still played.
+    Board backRank;
+    backRank.loadFEN("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1");
+    blunder = search(std::span(&backRank, 1), {.maxDepth = 3, .seed = 7, .blunderPercent = 100});
+    check(blunder.best == Move{A1, A8}, "a deliberate mistake never throws away a mate in one");
+
+    Board mated;
+    mated.loadFEN("rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3");
+    r = search(std::span(&mated, 1), {.maxDepth = 3});
+    check(r.best.from == NoSquare, "search returns no move when the game is over");
+}
+
 // Reference counts from the Chess Programming Wiki "Perft Results" page.
 struct PerftCase {
     const char* name;
@@ -375,6 +549,8 @@ int main(int argc, char** argv) {
     testClock();
     testEval();
     testSAN();
+    testZobrist();
+    testSearch();
     testPerft(deep ? 6 : 4);
     std::printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "OK", failures,
                 failures == 1 ? "" : "s");

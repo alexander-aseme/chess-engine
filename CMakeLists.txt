@@ -23,6 +23,7 @@ add_library(engine STATIC
   src/engine/movegen.cpp
   src/engine/eval.cpp
   src/engine/notation.cpp
+  src/engine/search.cpp
 )
 target_include_directories(engine PUBLIC src)
 if(MSVC)

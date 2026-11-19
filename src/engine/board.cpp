@@ -4,6 +4,8 @@
 #include <cstdlib>
 #include <sstream>
 
+#include "engine/zobrist.h"
+
 namespace chess {
 
 namespace {
@@ -109,7 +111,46 @@ namespace {
         epSquare_ = epSq;
         halfmove_ = halfmove;
         fullmove_ = fullmove;
+        key_ = computeKey();
         return true;
+    }
+
+    // A pawn of the side to move stands beside the pawn that just double-pushed,
+    // so it could capture en passant. (Whether that capture would be legal isn't
+    // checked; a pinned pawn still counts, which only makes a few positions hash
+    // differently that are really the same.)
+    bool Board::enPassantCapturable() const {
+        if (epSquare_ == NoSquare) return false;
+        int pawnRank = sideToMove_ == White ? 4 : 3;  // rank the capturing pawn stands on
+        for (int df : {-1, 1}) {
+            int f = fileOf(epSquare_) + df;
+            if (f >= 0 && f < 8 && at(f, pawnRank) == makePiece(sideToMove_, Pawn)) return true;
+        }
+        return false;
+    }
+
+    uint64_t Board::stateKey() const {
+        uint64_t k = kZobrist.castling[castling_];
+        if (sideToMove_ == Black) k ^= kZobrist.blackToMove;
+        if (enPassantCapturable()) k ^= kZobrist.enPassant[fileOf(epSquare_)];
+        return k;
+    }
+
+    uint64_t Board::computeKey() const {
+        uint64_t k = stateKey();
+        for (Square s = 0; s < 64; ++s)
+            if (squares_[s] != NoPiece) k ^= kZobrist.piece[squares_[s]][s];
+        return k;
+    }
+
+    void Board::put(Square s, Piece p) {
+        squares_[s] = p;
+        key_ ^= kZobrist.piece[p][s];
+    }
+
+    void Board::clear(Square s) {
+        key_ ^= kZobrist.piece[squares_[s]][s];
+        squares_[s] = NoPiece;
     }
 
     std::string Board::toFEN() const {
@@ -146,21 +187,27 @@ namespace {
         PieceType type = typeOf(moving);
         bool capture = squares_[m.to] != NoPiece;
 
+        // The key: take out the old side to move, castling rights and en passant
+        // here; put the new ones back at the end. Pieces are updated as they move.
+        key_ ^= stateKey();
+
         // En passant: the captured pawn is beside the start square.
         if (type == Pawn && m.to == epSquare_) {
-            squares_[makeSquare(fileOf(m.to), rankOf(m.from))] = NoPiece;
+            clear(makeSquare(fileOf(m.to), rankOf(m.from)));
             capture = true;
         }
 
         // Castling: the king moves two squares, so the rook jumps over it.
         if (type == King && std::abs(fileOf(m.to) - fileOf(m.from)) == 2) {
             auto [rookFrom, rookTo] = castlingRookJump(m.to);
-            squares_[rookTo] = squares_[rookFrom];
-            squares_[rookFrom] = NoPiece;
+            Piece rook = squares_[rookFrom];
+            clear(rookFrom);
+            put(rookTo, rook);
         }
 
-        squares_[m.to] = m.promotion != NoType ? makePiece(colorOf(moving), m.promotion) : moving;
-        squares_[m.from] = NoPiece;
+        if (squares_[m.to] != NoPiece) clear(m.to);  // normal capture
+        clear(m.from);
+        put(m.to, m.promotion != NoType ? makePiece(colorOf(moving), m.promotion) : moving);
 
         castling_ &= ~(rightsLostAt(m.from) | rightsLostAt(m.to));
         halfmove_ = (type == Pawn || capture) ? 0 : halfmove_ + 1;
@@ -172,6 +219,7 @@ namespace {
             epSquare_ = makeSquare(fileOf(m.from), (rankOf(m.from) + rankOf(m.to)) / 2);
 
         sideToMove_ = opposite(sideToMove_);
+        key_ ^= stateKey();
     }
 
 }  // namespace chess
