@@ -1,10 +1,29 @@
 # Chess
 
+[![Build](https://github.com/alexander-aseme/chess-engine/actions/workflows/build.yml/badge.svg)](https://github.com/alexander-aseme/chess-engine/actions/workflows/build.yml)
+
 A chess game and engine written from scratch in C++20, with an
 OpenGL renderer on top of GLFW. Runs natively on macOS, Linux and Windows and in the
 browser through WebAssembly.
 
 ![screenshot](docs/screenshot.png)
+
+## Download
+
+Ready-to-play builds for Windows, macOS and Linux are on the
+[Releases](https://github.com/alexander-aseme/chess-engine/releases) page; nothing
+needs to be installed. Unzip and run `chess` (`chess.exe` on Windows), keeping
+the `assets` folder next to it.
+
+- **macOS:** the build isn't signed by Apple, so the first launch is blocked.
+  Open *System Settings → Privacy & Security* and click *Open Anyway*, or run
+  `xattr -dr com.apple.quarantine chess-macos` once on the unpacked folder.
+- **Windows:** SmartScreen may warn about an unrecognised app; choose
+  *More info → Run anyway*.
+
+Every push is built and tested on all three systems by
+[GitHub Actions](.github/workflows/build.yml); pushing a tag such as `v0.3`
+publishes a release.
 
 ## Build and run
 
@@ -19,8 +38,42 @@ cmake --build build -j
 ./build/chess
 ```
 
-CMake downloads GLFW and stb_image on the first configure, so you need an
+CMake downloads GLFW, stb_image and miniaudio on the first configure, so you need an
 internet connection the first time.
+
+### Linux
+
+```sh
+sudo apt install build-essential cmake xorg-dev libwayland-dev libxkbcommon-dev
+cmake -S . -B build
+cmake --build build -j
+./build/chess
+```
+
+### Windows
+
+With Visual Studio 2022 or its Build Tools ("Desktop development with C++"), from a
+Developer PowerShell:
+
+```sh
+cmake -S . -B build
+cmake --build build --config Release
+.\build\Release\chess.exe
+```
+
+Without admin rights, unzip [WinLibs](https://winlibs.com/) (GCC with CMake
+included) anywhere in your user folder and put its `mingw64\bin` on the PATH for
+the session:
+
+```sh
+$env:Path = "C:\path\to\mingw64\bin;$env:Path"
+cmake -S . -B build -G "MinGW Makefiles"
+cmake --build build --parallel
+.\build\chess.exe
+```
+
+Either way the exe carries its own runtime, so `chess.exe` plus the `assets`
+folder can be copied to any Windows PC.
 
 The game opens on a menu: pick an opponent (two players on one device, or the
 computer at one of four strengths, playing White, Black or a random colour) and

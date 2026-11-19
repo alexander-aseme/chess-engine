@@ -2,6 +2,8 @@
 // The same code builds natively (macOS/Linux) and for the browser (Emscripten).
 
 #include <cstdio>
+#include <filesystem>
+#include <system_error>
 
 #include "gui/game.h"
 #include "gui/gl.h"
@@ -61,6 +63,18 @@ void render(App* app) {
 void onResizeRedraw(GLFWwindow* w) { render(static_cast<App*>(glfwGetWindowUserPointer(w))); }
 void onFramebufferSize(GLFWwindow* w, int /*width*/, int /*height*/) { onResizeRedraw(w); }
 
+// Images, fonts and sounds are loaded by relative path ("assets/..."). When the
+// game isn't started from its own folder (double-clicked in Finder or Explorer,
+// or run as build/chess from elsewhere), switch to the folder holding the
+// executable if that's where the assets are.
+void findAssets(const char* argv0) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!argv0 || fs::exists("assets", ec)) return;
+    fs::path dir = fs::absolute(argv0, ec).parent_path();
+    if (!ec && fs::exists(dir / "assets", ec)) fs::current_path(dir, ec);
+}
+
 // One frame. Browsers don't allow an infinite loop on the main thread, so on
 // the web Emscripten calls this once per animation frame instead.
 void frame(void* userData) {
@@ -72,7 +86,12 @@ void frame(void* userData) {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+#ifndef __EMSCRIPTEN__
+    findAssets(argc > 0 ? argv[0] : nullptr);
+#else
+    (void)argc, (void)argv;
+#endif
     glfwSetErrorCallback([](int code, const char* msg) {
         std::fprintf(stderr, "GLFW error %d: %s\n", code, msg);
     });

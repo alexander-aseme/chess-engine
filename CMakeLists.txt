@@ -9,6 +9,15 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
+# Windows: put the C/C++ runtime inside the exe, so it runs on a PC that has no
+# compiler or Visual C++ redistributable installed.
+if(MSVC)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  set(USE_MSVC_RUNTIME_LIBRARY_DLL OFF CACHE BOOL "" FORCE)  # GLFW's own switch
+elseif(MINGW)
+  add_link_options(-static)  # libstdc++, libgcc and winpthread
+endif()
+
 option(CHESS_BUILD_GUI "Build the graphical game" ON)
 option(CHESS_BUILD_TESTS "Build engine tests" ON)
 
@@ -94,7 +103,13 @@ if(CHESS_BUILD_GUI)
     target_include_directories(glad PUBLIC external/glad/include)
     target_link_libraries(chess PRIVATE glad)
 
-    if(APPLE)
+    if(WIN32)
+      # A windowed program: no console window opens behind the game.
+      set_target_properties(chess PROPERTIES WIN32_EXECUTABLE TRUE)
+      if(MSVC)
+        target_link_options(chess PRIVATE /ENTRY:mainCRTStartup)  # keep main() as the entry point
+      endif()
+    elseif(APPLE)
       target_link_libraries(chess PRIVATE
         "-framework CoreAudio" "-framework AudioToolbox" "-framework CoreFoundation")
     elseif(UNIX)

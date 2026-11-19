@@ -1,0 +1,136 @@
+# Builds the game and runs the engine tests on Linux, macOS and Windows (with both
+# Visual Studio's compiler and MinGW) on every push and pull request.
+#
+# Each build is packaged as a download (the game plus its assets folder), kept for
+# a while on the run's summary page. Pushing a tag that starts with "v", e.g.
+#   git tag v0.3 && git push origin v0.3
+# also publishes those downloads as a GitHub Release.
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-latest
+            package: chess-linux-x64
+          - name: macOS
+            os: macos-latest
+            package: chess-macos
+            osx_arch: arm64;x86_64  # one binary for Apple silicon and Intel Macs
+          - name: Windows (MSVC)
+            os: windows-latest
+            package: chess-windows-x64
+          # Same compiler as a portable WinLibs setup. Built and tested, not released.
+          - name: Windows (MinGW)
+            os: windows-latest
+            mingw: true
+            generator: Ninja
+    defaults:
+      run:
+        shell: ${{ matrix.mingw && 'msys2 {0}' || 'bash' }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install GLFW's build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xorg-dev libwayland-dev libxkbcommon-dev
+
+      - name: Install MinGW
+        if: matrix.mingw
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+
+      - name: Configure
+        env:
+          GENERATOR: ${{ matrix.generator }}
+          OSX_ARCH: ${{ matrix.osx_arch }}
+        run: |
+          args=(-DCMAKE_BUILD_TYPE=Release)
+          if [ -n "$GENERATOR" ]; then args+=(-G "$GENERATOR"); fi
+          if [ -n "$OSX_ARCH" ]; then args+=("-DCMAKE_OSX_ARCHITECTURES=$OSX_ARCH"); fi
+          cmake -S . -B build "${args[@]}"
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Check the exe needs no compiler DLLs
+        if: matrix.mingw
+        run: |
+          objdump -p build/chess.exe | grep "DLL Name"
+          if objdump -p build/chess.exe | grep -iE "libstdc|libgcc|libwinpthread"; then
+            echo "chess.exe depends on MinGW runtime DLLs"; exit 1
+          fi
+
+      - name: Package
+        if: matrix.package
+        env:
+          PACKAGE: ${{ matrix.package }}
+        run: |
+          dir=build; [ -d build/Release ] && dir=build/Release
+          mkdir -p "dist/$PACKAGE"
+          cp -R "$dir/assets" "dist/$PACKAGE/"
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp "$dir/chess.exe" "dist/$PACKAGE/"
+            (cd dist && 7z a -bd "$PACKAGE.zip" "$PACKAGE" > /dev/null)
+          else
+            cp "$dir/chess" "dist/$PACKAGE/"
+            # tar keeps the executable bit, which a zip made here would lose.
+            tar -czf "dist/$PACKAGE.tar.gz" -C dist "$PACKAGE"
+          fi
+          ls -l dist
+
+      - name: Upload
+        if: matrix.package
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.package }}
+          path: dist/${{ matrix.package }}.*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l dist
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
